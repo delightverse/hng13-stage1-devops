@@ -5,6 +5,5 @@ npm-debug.log
 .gitignore
 README.md
 .env
-deploy_20251020_234520.log
-deploy.sh
+
 
