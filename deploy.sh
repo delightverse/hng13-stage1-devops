@@ -256,6 +256,45 @@ test_ssh_connection() {
     fi
 }
 
+# Function to wait for service to be ready
+wait_for_service() {
+    local service_name="$1"
+    local max_attempts="${2:-30}"  # Default 30 attempts = 1 minute
+    local attempt=1
+    
+    log "INFO" "Waiting for $service_name to be ready..."
+    
+    while [[ $attempt -le $max_attempts ]]; do
+        if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" "sudo systemctl is-active $service_name" > /dev/null 2>&1; then
+            log "INFO" "$service_name is now active"
+            return 0
+        fi
+        
+        log "DEBUG" "Attempt $attempt/$max_attempts: $service_name not ready yet, waiting..."
+        sleep 2
+        ((attempt++))
+    done
+    
+    log "WARN" "$service_name did not become active within expected time"
+    return 1
+}
+
+# Function to check remote conditions (non-critical)
+check_remote_condition() {
+    local command="$1"
+    local description="$2"
+    
+    log "DEBUG" "Checking remote condition: $description"
+    
+    if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" "$command" > /dev/null 2>&1; then
+        log "DEBUG" "$description: condition met"
+        return 0
+    else
+        log "DEBUG" "$description: condition not met"
+        return 1
+    fi
+}
+
 # Function to execute remote commands
 execute_remote_command() {
     local command="$1"
@@ -292,16 +331,24 @@ prepare_remote_environment() {
     # Install Docker
     execute_remote_command '
         if ! command -v docker &> /dev/null; then
+            echo "Installing Docker..."
             curl -fsSL https://get.docker.com -o get-docker.sh
             sudo sh get-docker.sh
             sudo usermod -aG docker $USER
             sudo systemctl enable docker
-            sudo systemctl start docker
-            echo "Docker installed successfully"
+            
+            # Try to start Docker, but dont fail if deferred
+            sudo systemctl start docker || echo "Docker start may be deferred - this is normal"
+            echo "Docker installation completed"
         else
             echo "Docker already installed"
+            # Ensure Docker is running
+            sudo systemctl start docker || true
         fi
     ' "Docker installation"
+    
+    # Wait for Docker to be ready
+    wait_for_service "docker"
     
     # Install Docker Compose
     execute_remote_command '
@@ -317,14 +364,22 @@ prepare_remote_environment() {
     # Install Nginx
     execute_remote_command '
         if ! command -v nginx &> /dev/null; then
+            echo "Installing Nginx..."
             sudo apt install -y nginx
             sudo systemctl enable nginx
-            sudo systemctl start nginx
-            echo "Nginx installed successfully"
+            
+            # Try to start Nginx, but dont fail if deferred
+            sudo systemctl start nginx || echo "Nginx start may be deferred - this is normal"
+            echo "Nginx installation completed"
         else
             echo "Nginx already installed"
+            # Ensure Nginx is running
+            sudo systemctl start nginx || true
         fi
     ' "Nginx installation"
+    
+    # Wait for Nginx to be ready
+    wait_for_service "nginx"
     
     # Verify installations
     execute_remote_command "docker --version && docker-compose --version && nginx -v" "Installation verification"
@@ -367,7 +422,7 @@ deploy_docker_application() {
     " "Container cleanup"
     
     # Build and run container
-    if execute_remote_command "cd /home/$SSH_USER/deployments/$PROJECT_NAME && [[ -f docker-compose.yml || -f docker-compose.yaml ]]" "Check for Docker Compose"; then
+    if check_remote_condition "cd /home/$SSH_USER/deployments/$PROJECT_NAME && [[ -f docker-compose.yml || -f docker-compose.yaml ]]" "Check for Docker Compose"; then
         # Use Docker Compose
         execute_remote_command "
             cd /home/$SSH_USER/deployments/$PROJECT_NAME
