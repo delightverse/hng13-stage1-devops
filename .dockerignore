@@ -1,0 +1,10 @@
+
+node_modules
+npm-debug.log
+.git
+.gitignore
+README.md
+.env
+deploy_20251020_234520.log
+deploy.sh
+
